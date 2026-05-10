@@ -200,7 +200,7 @@ reach 500 words.
 
 ## Plot 1 -- Bar chart: corpus composition
 
-```{r plot1, eval=FALSE}
+```{r plot1, fig.cap="Number of BBC News articles per category."}
 news_features |>
   count(category) |>
   ggplot(aes(x = fct_reorder(category, n, .desc = TRUE), y = n, fill = category)) +
@@ -213,8 +213,6 @@ news_features |>
   theme(legend.position = "none")
 ```
 
-![Number of BBC News articles per category.](figures/plot1_counts.png)
-
 The five classes are reasonably balanced --- the largest (*sport*, 511) is
 only ~32 % bigger than the smallest (*entertainment*, 386). A trained
 classifier will not need much resampling; the chart also tells us the
@@ -223,7 +221,7 @@ the period covered.
 
 ## Plot 2 -- Boxplot: how long is the body of an article?
 
-```{r plot2, eval=FALSE}
+```{r plot2, fig.cap="Distribution of article length (words) by category."}
 news_features |>
   ggplot(aes(x = category, y = content_words, fill = category)) +
   geom_boxplot(alpha = 0.75, outlier.alpha = 0.25, width = 0.55) +
@@ -235,8 +233,6 @@ news_features |>
   theme(legend.position = "none")
 ```
 
-![Distribution of article length (words) by category.](figures/plot2_box.png)
-
 The boxplot makes clear that *politics* and *tech* are the long-form beats:
 the median politics piece is 434 words, almost 50 % longer than the median
 business piece (292). *Sport* is the shortest and the most concentrated.
@@ -245,7 +241,7 @@ pieces of musicians, film reviews, awards round-ups.
 
 ## Plot 3 -- Histogram: title length distribution
 
-```{r plot3, eval=FALSE}
+```{r plot3, fig.cap="Distribution of title word counts by category."}
 news_features |>
   ggplot(aes(x = title_words, fill = category)) +
   geom_histogram(binwidth = 1, position = "identity",
@@ -257,8 +253,6 @@ news_features |>
   )
 ```
 
-![Distribution of title word counts by category.](figures/plot3_hist.png)
-
 Headlines, in stark contrast to bodies, are remarkably uniform across
 categories: the mode is 5 words for every category, almost no headline
 exceeds 12 words, and the densities essentially overlay one another.
@@ -268,7 +262,7 @@ piece, not in its packaging.
 
 ## Plot 4 -- Heatmap: distinctive vocabulary per category
 
-```{r plot4, eval=FALSE}
+```{r plot4, fig.cap="Distinctive words by category, measured as occurrences per 1,000 words.", fig.height=6}
 # A second user-defined helper: turn raw text into a tidy bag-of-words.
 tokenise <- function(txt) {
   txt |>
@@ -322,8 +316,6 @@ distinctive |>
   )
 ```
 
-![Distinctive words by category, measured as occurrences per 1,000 words.](figures/plot4_heatmap.png)
-
 This is the most informative visualisation in the report. The bright
 diagonal blocks tell us the model's job will be relatively easy:
 
@@ -338,6 +330,154 @@ distinctive list of another category. This is empirical confirmation that
 **lexical features alone** carry most of the classification signal in this
 dataset --- which is why simple TF-IDF + linear SVM models routinely score
 above 95 % accuracy on it.
+
+## Plot 5 -- Tone and political balance: sentiment per category, plus a Labour-vs-Conservative deep-dive
+
+Beyond *what* each desk writes about, we can also ask about *tone*: are
+some categories systematically more positive than others, and within
+politics is the BBC's coverage of the major UK parties tilted in any
+direction? We use the **Bing opinion lexicon** [@hu2004], available out of
+the box via `tidytext::get_sentiments("bing")`.
+
+```{r plot5, fig.cap="Net sentiment per category (a) and Labour-vs-Conservative breakdown within politics (b).", fig.width=11, fig.height=4.6}
+library(tidytext)
+
+# 1) Per-category sentiment: tokenise every article, join the Bing
+#    lexicon, summarise to a single number per category.
+bing <- tidytext::get_sentiments("bing")
+
+article_tokens <- news_features |>
+  select(category, filename, content) |>
+  mutate(token = map(content, tokenise)) |>
+  select(-content) |>
+  unnest(token)
+
+cat_sentiment <- article_tokens |>
+  inner_join(bing, by = c("token" = "word")) |>
+  group_by(category) |>
+  summarise(
+    n_tokens = n(),
+    n_pos    = sum(sentiment == "positive"),
+    n_neg    = sum(sentiment == "negative"),
+    net_per_1000 = (n_pos - n_neg) / n_tokens * 1000
+  ) |>
+  arrange(net_per_1000)
+
+# 2) Politics deep-dive: build party-keyword bags, classify each politics
+#    article by the party that dominates its mentions, and average the
+#    article-level sentiment per party.
+party_keywords <- tribble(
+  ~party,         ~keyword,
+  "Labour",       "labour",
+  "Labour",       "blair",
+  "Labour",       "brown",
+  "Labour",       "blunkett",
+  "Labour",       "prescott",
+  "Conservative", "tory",
+  "Conservative", "tories",
+  "Conservative", "conservative",
+  "Conservative", "howard",
+  "Conservative", "letwin",
+  "Lib Dem",      "kennedy",
+  "Lib Dem",      "libdem",
+  "Lib Dem",      "campbell"
+)
+
+article_sent <- article_tokens |>
+  inner_join(bing, by = c("token" = "word")) |>
+  group_by(category, filename) |>
+  summarise(
+    n_tokens = n(),
+    n_pos    = sum(sentiment == "positive"),
+    n_neg    = sum(sentiment == "negative"),
+    net_per_1000 = (n_pos - n_neg) / n_tokens * 1000,
+    .groups = "drop"
+  )
+
+party_focus <- article_tokens |>
+  filter(category == "politics") |>
+  inner_join(party_keywords, by = c("token" = "keyword")) |>
+  count(filename, party) |>
+  group_by(filename) |>
+  mutate(share = n / sum(n), total = sum(n)) |>
+  filter(total >= 5, share >= 0.6) |>
+  slice_max(share, n = 1) |>
+  ungroup() |>
+  select(filename, primary_party = party)
+
+party_sentiment <- article_sent |>
+  inner_join(party_focus, by = "filename") |>
+  group_by(primary_party) |>
+  summarise(n_articles = n(),
+            mean_net = mean(net_per_1000) |> round(2)) |>
+  arrange(desc(mean_net))
+
+# 3) Compose the two panels with patchwork.
+library(patchwork)
+
+p_left <- cat_sentiment |>
+  ggplot(aes(x = net_per_1000,
+             y = fct_reorder(category, net_per_1000),
+             fill = category)) +
+  geom_col(width = 0.65) +
+  geom_text(aes(label = sprintf("%+.1f", net_per_1000)),
+            hjust = ifelse(cat_sentiment$net_per_1000 >= 0, -0.15, 1.15),
+            size = 3.4) +
+  geom_vline(xintercept = 0) +
+  labs(title = "(a) Net sentiment by category",
+       x = "Net sentiment (positive - negative) per 1,000 words",
+       y = NULL) +
+  theme(legend.position = "none")
+
+p_right <- party_sentiment |>
+  ggplot(aes(x = mean_net,
+             y = fct_relevel(primary_party, "Labour", "Conservative", "Lib Dem"),
+             fill = primary_party)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = sprintf("%+.2f  (n=%d)", mean_net, n_articles)),
+            hjust = ifelse(party_sentiment$mean_net >= 0, -0.1, 1.1),
+            size = 3.4) +
+  geom_vline(xintercept = 0) +
+  scale_fill_manual(values = c("Labour" = "#d62728",
+                               "Conservative" = "#1f77b4",
+                               "Lib Dem" = "#ff7f0e")) +
+  labs(title = "(b) Sentiment of politics articles primarily about each party",
+       x = "Net sentiment (positive - negative) per 1,000 words",
+       y = NULL) +
+  theme(legend.position = "none")
+
+p_left + p_right + plot_annotation(
+  title = "Tone & political balance across the BBC corpus"
+)
+```
+
+The two panels tell complementary stories.
+
+**Panel (a) -- the tone gradient.** Entertainment is by far the most
+upbeat desk (+17.7 net positive words per 1,000), driven by reviews,
+awards and praise vocabulary. Sport (+8.8) and tech (+5.1) are also
+positive, but more measured. Business sits exactly at zero (-0.0): the
+language of profits and sales is balanced almost perfectly by the language
+of losses, falls and risks. Politics is the **only** category to come out
+net-negative (-1.2), which fits a beat dominated by criticism, scandal and
+opposition-vs-government framing.
+
+**Panel (b) -- the political balance.** Within the 417 politics articles,
+Labour-related keywords (Labour, Blair, Brown, Blunkett, Prescott) account
+for **55.9 %** of party mentions; the Conservatives (Tories, Howard,
+Letwin) for **33.3 %**; the Liberal Democrats for the remaining 10.8 %.
+That asymmetry is unsurprising: in 2004-05 Labour was the governing party
+and naturally generated more news.
+
+The more telling number is the *sentiment* of articles primarily about
+each party. After restricting to articles where a party dominates the
+mentions (>= 60 % of party-keyword references and at least 5 mentions),
+**Labour-focused articles average +2.33 net per 1,000 words and
+Conservative-focused articles average +1.95** --- statistically
+indistinguishable on a sample of n = 88 vs n = 43. In other words, once
+the volume difference is controlled for, the BBC's politics writing is
+**not measurably tilted toward either of the two main parties**. The Lib
+Dem cell is too small to draw conclusions from (n = 5).
 
 # Interpretation and conclusion {#sec-conclusion}
 
@@ -355,17 +495,35 @@ or sport pieces, and the per-category vocabulary is sharply distinct
 across categories** (Plot 3) --- a surprising but consistent pattern that
 reflects house style rather than content.
 
-The third is more methodological: the entire pipeline --- from raw
-tab-separated file to a publication-ready report --- fits comfortably in a
-single tidyverse chain of `read_tsv |> mutate |> group_by |> summarise |>
-inner_join |> ggplot`. The pipe operator `|>` is what makes the analysis
-read like a sentence rather than a stack of nested function calls, and is
-the workflow this assignment was designed to demonstrate.
+The third finding goes beyond *what* each desk writes about and looks at
+*how* they write. Categories sit on a clear tone gradient: entertainment
+articles average **+17.7** net-positive words per 1,000, sport **+8.8**
+and tech **+5.1**; business is exactly neutral (**-0.0**); politics is the
+only category to be net-negative (**-1.2**). That order is intuitive:
+review-and-award language is upbeat, market language is symmetric (gains
+and losses cancel), and political coverage skews toward criticism,
+scandal and opposition framing.
+
+The most striking sub-finding is **inside politics itself**. Labour
+dominates the *volume* of party coverage (**55.9 %** of party-keyword
+mentions to the Conservatives' 33.3 %), but that simply tracks the fact
+that Labour was the governing party in 2004-05. When we condition on
+articles that are primarily *about* a single party, the sentiment is
+essentially the same on both sides: Labour-focused pieces average
+**+2.33** net per 1,000 words, Conservative-focused pieces **+1.95** ---
+a difference well inside the noise of an n = 88 / n = 43 split. So the
+BBC's politics writing in this corpus is *negative on average*, but not
+detectably tilted toward either of the two main parties. The Lib Dem
+cell (n = 5) is too small for any inference.
 
 A natural extension would be to compute TF-IDF weights and project the
 articles into 2-D with `irlba::prcomp_irlba` plus `ggplot2`; we would
 expect to see five well-separated clusters, in line with the lexical
-fingerprints uncovered above.
+fingerprints uncovered above. A second extension would be to swap the
+Bing lexicon for **AFINN** [@nielsen2011] or **NRC** [@mohammad2013]: AFINN
+adds intensity weights, while NRC adds emotion categories (anger, joy,
+fear, ...) that would let us ask whether politics is just *negative* or
+specifically *fearful* or *angry*.
 
 # References {#sec-references}
 
@@ -389,5 +547,14 @@ fingerprints uncovered above.
 
 <p><strong>Wikipedia contributors.</strong> "Exploratory data analysis", Wikipedia, The Free Encyclopedia.
 <a href="https://en.wikipedia.org/wiki/Exploratory_data_analysis">https://en.wikipedia.org/wiki/Exploratory_data_analysis</a> (consulted May 2026).</p>
+
+<p><strong>Hu, M. and Liu, B. (2004).</strong> "Mining and Summarizing Customer Reviews". <em>Proceedings of KDD 2004</em>. Source of the Bing opinion lexicon distributed with the R package <code>tidytext</code>.
+<a href="https://www.cs.uic.edu/~liub/FBS/sentiment-analysis.html">https://www.cs.uic.edu/~liub/FBS/sentiment-analysis.html</a></p>
+
+<p><strong>Nielsen, F. &Aring;. (2011).</strong> "A new ANEW: Evaluation of a word list for sentiment analysis in microblogs". <em>Proceedings of the ESWC 2011 Workshop on Making Sense of Microposts</em>. Source of the AFINN lexicon.</p>
+
+<p><strong>Mohammad, S. M. and Turney, P. D. (2013).</strong> "Crowdsourcing a Word-Emotion Association Lexicon". <em>Computational Intelligence</em>, 29(3): 436-465. Source of the NRC emotion lexicon.</p>
+
+<p><strong>Silge, J. and Robinson, D. (2017).</strong> <em>Text Mining with R: A Tidy Approach</em>. O'Reilly. <a href="https://www.tidytextmining.com">https://www.tidytextmining.com</a></p>
 </div>
 ```
