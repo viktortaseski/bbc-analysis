@@ -73,7 +73,7 @@ university-level demonstration of the tidyverse workflow [@wickham2019;
 # Presentation of the data {#sec-data}
 
 The data was downloaded from Kaggle [@kaggle_bbc] and stored as a single
-tab-separated file (`bbc-news-data.csv`). Each row is one news article
+tab-separated file (`data.csv`). Each row is one news article
 collected from the BBC News website between 2004 and 2005.
 
 ```{r load-data}
