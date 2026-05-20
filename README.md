@@ -35,3 +35,6 @@ quarto render bbc-news-analysis.qmd
 
 That produces a fresh `bbc-news-analysis.html` whose resources are
 embedded thanks to `embed-resources: true` in the YAML header.
+
+## Live site
+Link: https://bbc-news-analysis.netlify.app/
